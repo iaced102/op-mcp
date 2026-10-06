@@ -595,6 +595,33 @@ class OpenProjectClient:
 
         return result
 
+    async def get_time_entry_form(self, work_package_id: int) -> Dict:
+        """Get creation schema for a work package without saving a time entry."""
+        return await self._request("POST", "/time_entries/form", {
+            "_links": {"workPackage": {
+                "href": f"/api/v3/work_packages/{work_package_id}"
+            }}
+        })
+
+    async def get_allowed_time_entry_activities(self, work_package_id: int) -> List[Dict]:
+        """Read actual project-specific activity choices from the form schema."""
+        form = await self.get_time_entry_form(work_package_id)
+        schema = form.get("_embedded", {}).get("schema", {}).get("activity", {})
+        values = schema.get("_embedded", {}).get("allowedValues")
+        if values is not None:
+            return values
+        links = schema.get("_links", {}).get("allowedValues")
+        if isinstance(links, list):
+            return [{"id": int(link["href"].rstrip("/").split("/")[-1]),
+                     "name": link.get("title", "Unnamed")} for link in links]
+        if isinstance(links, dict) and links.get("href"):
+            href = links["href"]
+            if not href.startswith("/api/v3/"):
+                raise ValueError("Unexpected activity collection URL")
+            result = await self._request("GET", href[len("/api/v3"):])
+            return result.get("_embedded", {}).get("elements", [])
+        raise ValueError("Time entry form did not provide activity choices")
+
     async def create_time_entry(self, data: Dict) -> Dict:
         """
         Create a new time entry.

@@ -11,7 +11,7 @@ class CreateTimeEntryInput(BaseModel):
     work_package_id: int = Field(..., description="Work package ID", gt=0)
     hours: float = Field(..., description="Hours spent", gt=0)
     spent_on: str = Field(..., description="Date spent (YYYY-MM-DD)")
-    activity_id: int = Field(..., description="Activity ID (1=Management, 2=Specification, 3=Development, 4=Testing)", gt=0)
+    activity_id: int = Field(..., description="Actual activity ID returned by list_time_entry_activities(work_package_id)", gt=0)
     comment: Optional[str] = Field(None, description="Optional comment")
 
 
@@ -98,11 +98,8 @@ async def list_time_entries(
 async def create_time_entry(input: CreateTimeEntryInput) -> str:
     """Create a new time entry for a work package.
 
-    Activity IDs (common values):
-    - 1: Management
-    - 2: Specification
-    - 3: Development
-    - 4: Testing
+    Fetch valid activity IDs with list_time_entry_activities(work_package_id).
+    Activity IDs are configured per instance and must not be guessed.
 
     Args:
         input: Time entry data including work_package_id, hours, date, activity, and optional comment
@@ -225,45 +222,42 @@ async def delete_time_entry(time_entry_id: int) -> str:
 
 
 @mcp.tool
-async def list_time_entry_activities() -> str:
-    """List available time entry activities.
+async def list_time_entry_activities(work_package_id: Optional[int] = None) -> str:
+    """List actual allowed activities. Supply a work package ID for project choices.
 
-    Note: This endpoint may return 404 on some OpenProject instances, but
-    common activity IDs are: 1=Management, 2=Specification, 3=Development, 4=Testing
-
-    Returns:
-        List of available activities or common activity IDs
+    Never substitutes guessed activity IDs when the API is unavailable.
     """
     try:
         client = get_client()
-
-        result = await client.get_time_entry_activities()
-        activities = result.get("_embedded", {}).get("elements", [])
-
+        if work_package_id is not None:
+            if work_package_id <= 0:
+                raise ValueError("work_package_id must be positive")
+            activities = await client.get_allowed_time_entry_activities(work_package_id)
+        else:
+            result = await client.get_time_entry_activities()
+            activities = result.get("_embedded", {}).get("elements", [])
         if not activities:
-            # Fallback to common activity IDs
-            text = "⚠️  **Common Time Entry Activities:**\n\n"
-            text += "- **Management** (ID: 1)\n"
-            text += "- **Specification** (ID: 2)\n"
-            text += "- **Development** (ID: 3)\n"
-            text += "- **Testing** (ID: 4)\n"
-            text += "\nNote: Use these IDs when creating/updating time entries.\n"
-            return text
-
-        text = "✅ **Available Time Entry Activities:**\n\n"
+            return "No allowed time entry activities found. Supply work_package_id to query its form."
+        text = "Available Time Entry Activities:\n\n"
         for activity in activities:
-            text += f"- **{activity.get('name', 'Unnamed')}** (ID: {activity.get('id', 'N/A')})\n"
-            if activity.get("isDefault"):
-                text += "  ✓ Default activity\n"
-
+            text += f"- {activity.get('name', 'Unnamed')} (ID: {activity.get('id', 'N/A')})\n"
+            if activity.get("default", activity.get("isDefault", False)):
+                text += "  Default activity\n"
         return text
-
     except Exception as e:
-        # Return common activities on error
-        text = "⚠️  **Common Time Entry Activities:**\n\n"
-        text += "- **Management** (ID: 1)\n"
-        text += "- **Specification** (ID: 2)\n"
-        text += "- **Development** (ID: 3)\n"
-        text += "- **Testing** (ID: 4)\n"
-        text += "\nNote: API endpoint unavailable. Use these common IDs.\n"
-        return text
+        return format_error(f"Failed to list activities: {e}. Supply work_package_id to use the form schema.")
+
+
+@mcp.tool
+async def get_time_entry_form(work_package_id: int) -> str:
+    """Return time entry creation form with schema, defaults and validation errors.
+
+    Does not create or save a time entry. Use its activity allowedValues for IDs.
+    """
+    try:
+        import json
+        if work_package_id <= 0:
+            raise ValueError("work_package_id must be positive")
+        return json.dumps(await get_client().get_time_entry_form(work_package_id), ensure_ascii=False)
+    except Exception as e:
+        return format_error(f"Failed to get time entry form: {e}")
