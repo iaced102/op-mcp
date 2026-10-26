@@ -1,9 +1,25 @@
 """Time entry management tools for time tracking."""
 
+import re
+from datetime import date
 from typing import Optional
 from pydantic import BaseModel, Field
 from src.server import mcp, get_client
 from src.utils.formatting import format_success, format_error
+
+
+def _hours(value):
+    """Convert API day/time durations to decimal hours without dropping minutes."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.fullmatch(
+        r"P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?"
+        r"(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?", str(value)
+    )
+    if not match or not any(match.groups()):
+        raise ValueError(f"Invalid time entry duration: {value!r}")
+    days, hours, minutes, seconds = (float(v or 0) for v in match.groups())
+    return days * 24 + hours + minutes / 60 + seconds / 3600
 
 
 class CreateTimeEntryInput(BaseModel):
@@ -29,7 +45,9 @@ async def list_time_entries(
     work_package_id: Optional[int] = None,
     user_id: Optional[int] = None,
     from_date: Optional[str] = None,
-    to_date: Optional[str] = None
+    to_date: Optional[str] = None,
+    offset: int = 1,
+    page_size: int = 100,
 ) -> str:
     """List time entries with optional filters.
 
@@ -38,6 +56,8 @@ async def list_time_entries(
         user_id: Optional filter by user
         from_date: Optional start date (YYYY-MM-DD)
         to_date: Optional end date (YYYY-MM-DD)
+        offset: Page number, starting at 1
+        page_size: Entries per page (1-100)
 
     Returns:
         List of time entries
@@ -46,30 +66,39 @@ async def list_time_entries(
         client = get_client()
 
         import json
+        if offset < 1 or not 1 <= page_size <= 100:
+            raise ValueError("offset must be >= 1 and page_size must be 1-100")
+        for value in (from_date, to_date):
+            if value:
+                date.fromisoformat(value)
+        if from_date and to_date and from_date > to_date:
+            raise ValueError("from_date must not be after to_date")
         filters = []
         if work_package_id:
-            filters.append({"work_package": {"operator": "=", "values": [str(work_package_id)]}})
+            filters.append({"entity_id": {"operator": "=", "values": [str(work_package_id)]}})
+            filters.append({"entity_type": {"operator": "=", "values": ["WorkPackage"]}})
         if user_id:
-            filters.append({"user": {"operator": "=", "values": [str(user_id)]}})
-        if from_date:
-            filters.append({"spent_on": {"operator": ">=", "values": [from_date]}})
-        if to_date:
-            filters.append({"spent_on": {"operator": "<=", "values": [to_date]}})
+            filters.append({"user_id": {"operator": "=", "values": [str(user_id)]}})
+        if from_date or to_date:
+            filters.append({"spent_on": {"operator": "<>d", "values": [
+                from_date or date.min.isoformat(), to_date or date.max.isoformat()
+            ]}})
 
         filters_json = json.dumps(filters) if filters else None
 
-        result = await client.get_time_entries(filters_json)
+        result = await client.get_time_entries(filters_json, offset=offset, page_size=page_size)
         entries = result.get("_embedded", {}).get("elements", [])
 
         if not entries:
-            return "No time entries found."
+            return f"No time entries on page {offset}. Total matching entries: {result.get('total', 0)}."
 
         text = f"✅ **Found {len(entries)} time entr{'y' if len(entries) == 1 else 'ies'}:**\n\n"
         total_hours = 0
 
         for entry in entries:
             text += f"**Time Entry #{entry.get('id', 'N/A')}**\n"
-            text += f"  Hours: {entry.get('hours', 0)}\n"
+            hours = _hours(entry.get('hours'))
+            text += f"  Hours: {hours:g}\n"
             text += f"  Date: {entry.get('spentOn', 'N/A')}\n"
 
             embedded = entry.get("_embedded", {})
@@ -79,14 +108,23 @@ async def list_time_entries(
                 text += f"  User: {embedded['user'].get('name', 'Unknown')}\n"
             if "activity" in embedded:
                 text += f"  Activity: {embedded['activity'].get('name', 'Unknown')}\n"
+            links = entry.get("_links", {})
+            for label, key in (("Work Package", "entity"), ("User", "user"),
+                               ("Activity", "activity"), ("Working hours", "customField2")):
+                if key not in embedded and links.get(key, {}).get("title"):
+                    text += f"  {label}: {links[key]['title']} ({links[key].get('href')})\n"
 
             if entry.get('comment', {}).get('raw'):
                 text += f"  Comment: {entry['comment']['raw']}\n"
 
-            total_hours += entry.get('hours', 0)
+            total_hours += hours
             text += "\n"
 
-        text += f"**Total Hours**: {total_hours}\n"
+        text += f"**Hours on this page**: {total_hours:g}\n"
+        total = result.get("total", len(entries))
+        text += f"**Page**: {offset}; **Total matching entries**: {total}\n"
+        if offset * page_size < total:
+            text += f"Use offset={offset + 1} to read the next page.\n"
 
         return text
 

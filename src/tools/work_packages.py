@@ -2,7 +2,7 @@
 
 import json
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.server import mcp, get_client
 from src.utils.formatting import (
@@ -17,6 +17,12 @@ from src.utils.formatting import (
 class CreateWorkPackageInput(BaseModel):
     """Input model for creating work packages with validation."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def parse_json_input(cls, value):
+        """Accept connectors that serialize the nested input object as JSON."""
+        return json.loads(value) if isinstance(value, str) else value
+
     project_id: int = Field(..., description="Project ID where work package will be created", gt=0)
     subject: str = Field(..., description="Work package title/subject", min_length=1, max_length=255)
     type_id: int = Field(..., description="Type ID (use list_types to see available types)", gt=0)
@@ -27,6 +33,7 @@ class CreateWorkPackageInput(BaseModel):
     status_id: Optional[int] = Field(None, description="Status ID", gt=0)
     priority_id: Optional[int] = Field(None, description="Priority ID", gt=0)
     version_id: Optional[int] = Field(None, description="Version/milestone ID to assign work package to", gt=0)
+    parent_id: Optional[int] = Field(None, description="Parent work package ID for creating a subtask", gt=0)
 
 
 class UpdateWorkPackageInput(BaseModel):
@@ -393,7 +400,8 @@ async def create_work_package(input: CreateWorkPackageInput) -> str:
     This is one of the most important tools for your 12 users to create new work items.
 
     Args:
-        input: Work package data including project_id, subject, type_id, and optional fields
+        input: Object containing project_id, subject, type_id, and optional parent_id
+            to create a subtask. A JSON-encoded object is also accepted.
 
     Returns:
         Success message with created work package ID and details
@@ -429,6 +437,8 @@ async def create_work_package(input: CreateWorkPackageInput) -> str:
             data["assignee_id"] = input.assignee_id
         if input.version_id:
             data["version_id"] = input.version_id
+        if input.parent_id:
+            data["parent_id"] = input.parent_id
 
         # Add date fields (use camelCase for API)
         if input.start_date:

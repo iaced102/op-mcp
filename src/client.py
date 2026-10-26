@@ -242,6 +242,10 @@ class OpenProjectClient:
             }
         if "type" in data:
             form_payload["_links"]["type"] = {"href": f"/api/v3/types/{data['type']}"}
+        if "parent_id" in data:
+            form_payload["_links"]["parent"] = {
+                "href": f"/api/v3/work_packages/{data['parent_id']}"
+            }
 
         # Set subject if provided
         if "subject" in data:
@@ -252,6 +256,8 @@ class OpenProjectClient:
 
         # Use form payload and add additional fields
         payload = form.get("payload", form_payload)
+        if "parent_id" in data:
+            payload.setdefault("_links", {})["parent"] = form_payload["_links"]["parent"]
         payload["lockVersion"] = form.get("lockVersion", 0)
 
         # Add optional fields
@@ -570,7 +576,7 @@ class OpenProjectClient:
 
         return result
 
-    async def get_time_entries(self, filters: Optional[str] = None) -> Dict:
+    async def get_time_entries(self, filters: Optional[str] = None, offset: int = 1, page_size: int = 100) -> Dict:
         """
         Retrieve time entries.
 
@@ -580,10 +586,10 @@ class OpenProjectClient:
         Returns:
             Dict: API response containing time entries
         """
-        endpoint = "/time_entries"
+        endpoint = f"/time_entries?offset={offset}&pageSize={page_size}"
         if filters:
             encoded_filters = quote(filters)
-            endpoint += f"?filters={encoded_filters}"
+            endpoint += f"&filters={encoded_filters}"
 
         result = await self._request("GET", endpoint)
 
