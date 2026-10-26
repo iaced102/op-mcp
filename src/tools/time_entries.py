@@ -1,9 +1,10 @@
 """Time entry management tools for time tracking."""
 
+import json
 import re
 from datetime import date
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from src.server import mcp, get_client
 from src.utils.formatting import format_success, format_error
 
@@ -24,6 +25,13 @@ def _hours(value):
 
 class CreateTimeEntryInput(BaseModel):
     """Input model for creating time entries."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_json_input(cls, value):
+        """Accept connectors that serialize the nested input object as JSON."""
+        return json.loads(value) if isinstance(value, str) else value
+
     work_package_id: int = Field(..., description="Work package ID", gt=0)
     hours: float = Field(..., description="Hours spent", gt=0)
     spent_on: str = Field(..., description="Date spent (YYYY-MM-DD)")
@@ -140,7 +148,8 @@ async def create_time_entry(input: CreateTimeEntryInput) -> str:
     Activity IDs are configured per instance and must not be guessed.
 
     Args:
-        input: Time entry data including work_package_id, hours, date, activity, and optional comment
+        input: Object containing work_package_id, hours, spent_on, activity_id,
+            and optional comment. A JSON-encoded object is also accepted.
 
     Returns:
         Success message with created time entry details
